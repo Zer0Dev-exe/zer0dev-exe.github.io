@@ -1,0 +1,50 @@
+# CI: se ejecuta en cada push a la rama principal y en cada PR.
+# Los PRs de Dependabot que pasan todos los jobs se mergean automáticamente.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: Validar workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
+
+  # Si todos los jobs anteriores pasan y el PR es de Dependabot, se hace merge solo.
+  # Las subidas de versión major se quedan abiertas para revisarlas a mano.
+  automerge:
+    name: Auto-merge Dependabot
+    needs: [actionlint]
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Leer datos del PR de Dependabot
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+      - name: Merge (patch/minor o seguridad no-major)
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "$PR_URL" --squash --delete-branch
+          gh workflow run jekyll-gh-pages.yml --ref master -R "$GITHUB_REPOSITORY"
+          gh workflow run static.yml --ref master -R "$GITHUB_REPOSITORY"
